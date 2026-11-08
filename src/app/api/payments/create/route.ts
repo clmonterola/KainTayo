@@ -1,9 +1,16 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { asNumber, asString, jsonError, readBody, requireApiSession } from "@/server/api";
+import {
+  asNumber,
+  asString,
+  guard,
+  jsonError,
+  readBody,
+  requireActor,
+} from "@/server/api";
 import { listProducts } from "@/server/product-store";
 import { saveOrder, transitionOrder } from "@/server/order-store";
-import { createCheckoutSession, paymongoEnabled, PayMongoError } from "@/server/paymongo";
+import { createInvoice, xenditEnabled, XenditError } from "@/server/xendit";
 import { computeTotals } from "@/lib/pricing";
 import { hasErrors, trimAll, validateCustomer } from "@/lib/validation";
 import {
@@ -27,8 +34,8 @@ function newReference() {
 }
 
 export async function POST(request: Request) {
-  const auth = await requireApiSession();
-  if (auth.response) return auth.response;
+  const actor = await requireActor();
+  if (actor.response) return actor.response;
 
   const body = await readBody(request);
   if (!body) return jsonError("Invalid request body.");
@@ -76,10 +83,12 @@ export async function POST(request: Request) {
     quantities.set(productId, Math.min(20, (quantities.get(productId) ?? 0) + quantity));
   }
 
-  const products = await listProducts();
+  const loaded = await guard(() => listProducts());
+  if (loaded.response) return loaded.response;
+
   const items: OrderItem[] = [];
   for (const [productId, quantity] of quantities) {
-    const product = products.find((entry) => entry.id === productId);
+    const product = loaded.data.find((entry) => entry.id === productId);
     if (!product) {
       return jsonError("A dish in your cart is no longer on the menu.", 409);
     }
@@ -97,10 +106,15 @@ export async function POST(request: Request) {
   }
 
   // Server-side pricing is the source of truth, never the client's totals.
-  const totals = computeTotals(items.map((item) => ({ price: item.unitPrice, quantity: item.quantity })));
+  const totals = computeTotals(
+    items.map((item) => ({ price: item.unitPrice, quantity: item.quantity })),
+  );
   const reference = newReference();
   const now = new Date().toISOString();
-  const provider = paymongoEnabled() ? "paymongo" : "demo";
+  const provider = xenditEnabled() ? "xendit" : "demo";
+  const origin =
+    process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") || new URL(request.url).origin;
+  const mockUrl = `/payment/mock/${reference}`;
 
   const order: Order = {
     reference,
@@ -112,88 +126,98 @@ export async function POST(request: Request) {
     deliveryFee: totals.deliveryFee,
     total: totals.total,
     status: "pending",
-    payment: { provider, method, providerStatus: "pending" },
+    payment:
+      provider === "demo"
+        ? {
+            provider,
+            method,
+            providerStatus: "demo_active",
+            checkoutUrl: mockUrl,
+          }
+        : { provider, method, providerStatus: "pending" },
     events: [
       {
         at: now,
         type: "order.created",
         message: `Order created for ${items.length} line item(s).`,
       },
+      ...(provider === "demo"
+        ? [
+            {
+              at: now,
+              type: "demo.session_created",
+              message: "Secure checkout session created.",
+            },
+          ]
+        : []),
     ],
   };
-  await saveOrder(order);
+
+  const saved = await guard(() =>
+    saveOrder(order, { userId: actor.actor.id }),
+  );
+  if (saved.response) return saved.response;
 
   if (provider === "demo") {
-    await transitionOrder(reference, {
-      status: "pending",
-      type: "demo.session_created",
-      message: "Demo gateway session created (PayMongo is not configured).",
-      payment: { providerStatus: "demo_active", checkoutUrl: `/payment/mock/${reference}` },
-    });
     return NextResponse.json({
       reference,
-      checkoutUrl: `/payment/mock/${reference}`,
+      checkoutUrl: mockUrl,
       mode: "demo",
       total: order.total,
     });
   }
 
-  const origin =
-    process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") || new URL(request.url).origin;
-  const methodLabel = PAYMENT_METHODS.find((entry) => entry.id === method)?.label ?? "payment";
+  const methodLabel =
+    PAYMENT_METHODS.find((entry) => entry.id === method)?.label ?? "payment";
 
   try {
-    const session = await createCheckoutSession({
+    const invoice = await createInvoice({
       reference,
-      description: `KainTayo order ${reference}`,
-      lines: items.map((item) => ({
-        name: item.name,
-        quantity: item.quantity,
-        amountCentavos: item.unitPrice * 100,
-        description: `₱${item.unitPrice} each`,
-      })),
-      method,
+      description: `KainTayo order ${reference} — ${items
+        .map((item) => `${item.quantity}× ${item.name}`)
+        .join(", ")
+        .slice(0, 300)}`,
+      amount: order.total,
+      payerEmail: customer.email,
       successUrl: `${origin}/payment/success?ref=${encodeURIComponent(reference)}`,
       cancelUrl: `${origin}/payment/cancel?ref=${encodeURIComponent(reference)}`,
-      customer: {
-        name: customer.name,
-        email: customer.email,
-        phone: customer.phone,
-      },
-      metadata: { reference },
     });
 
-    await transitionOrder(reference, {
-      status: "pending",
-      type: "paymongo.session_created",
-      message: `${methodLabel} checkout session ${session.id} created.`,
-      payment: {
-        sessionId: session.id,
-        checkoutUrl: session.checkoutUrl,
-        paymentIntentId: session.paymentIntentId,
-        providerStatus: session.status,
-      },
-    });
+    const transitioned = await guard(() =>
+      transitionOrder(reference, {
+        status: "pending",
+        type: "xendit.invoice_created",
+        message: `${methodLabel} invoice ${invoice.id} created.`,
+        payment: {
+          sessionId: invoice.id,
+          checkoutUrl: invoice.invoiceUrl,
+          providerStatus: invoice.status,
+        },
+      }),
+    );
+    if (transitioned.response) return transitioned.response;
 
     return NextResponse.json({
       reference,
-      checkoutUrl: session.checkoutUrl,
-      mode: "paymongo",
+      checkoutUrl: invoice.invoiceUrl,
+      mode: "xendit",
       total: order.total,
     });
   } catch (error) {
     const message =
-      error instanceof PayMongoError
+      error instanceof XenditError
         ? error.message
         : "The payment gateway did not respond as expected.";
-    console.error(`[paymongo] Could not create checkout session for ${reference}:`, message);
+    console.error(`[xendit] Could not create invoice for ${reference}:`, message);
 
-    await transitionOrder(reference, {
-      status: "failed",
-      type: "paymongo.session_failed",
-      message: `Checkout session could not be created: ${message}`,
-      failureReason: message,
-    });
+    await guard(() =>
+      transitionOrder(reference, {
+        status: "failed",
+        type: "xendit.invoice_failed",
+        message: `Checkout session could not be created: ${message}`,
+        failureReason: message,
+      }),
+    );
 
     return NextResponse.json(
       {

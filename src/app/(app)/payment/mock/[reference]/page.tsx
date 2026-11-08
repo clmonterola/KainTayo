@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import { MockGateway } from "@/components/payment/mock-gateway";
-import { getOrder } from "@/server/order-store";
+import { getOrderSafe } from "@/server/order-store";
 
 export const metadata: Metadata = { title: "Checkout" };
 
@@ -11,7 +11,7 @@ export default async function MockPaymentPage({
   params: Promise<{ reference: string }>;
 }) {
   const { reference } = await params;
-  const order = await getOrder(reference);
+  const order = await getOrderSafe(reference);
 
   if (!order) notFound();
   if (order.payment.provider !== "demo") {

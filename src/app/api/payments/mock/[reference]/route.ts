@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
-import { asString, jsonError, readBody, requireApiSession } from "@/server/api";
+import {
+  asString,
+  canAccessOrder,
+  guard,
+  jsonError,
+  readBody,
+  requireActor,
+} from "@/server/api";
 import { getOrder, transitionOrder } from "@/server/order-store";
 
 export const dynamic = "force-dynamic";
@@ -7,18 +14,27 @@ export const dynamic = "force-dynamic";
 type Context = { params: Promise<{ reference: string }> };
 
 /**
- * Simulates the hosted wallet/card page when no PayMongo key is configured.
- * It writes exactly the same order transitions a real webhook would.
+ * Built-in checkout gateway, used only while no Xendit key is configured.
+ * It writes exactly the same order transitions a real webhook would, through
+ * the same server-side route — the page itself never marks an order paid.
  */
 export async function POST(request: Request, { params }: Context) {
-  const auth = await requireApiSession();
-  if (auth.response) return auth.response;
+  const actor = await requireActor();
+  if (actor.response) return actor.response;
 
   const { reference } = await params;
-  const existing = await getOrder(reference);
+  const loaded = await guard(() => getOrder(reference));
+  if (loaded.response) return loaded.response;
+
+  const existing = loaded.data;
   if (!existing) return jsonError("We couldn't find that order.", 404);
+
+  const allowed = await guard(() => canAccessOrder(existing, actor.actor));
+  if (allowed.response) return allowed.response;
+  if (!allowed.data) return jsonError("You don't have access to that order.", 403);
+
   if (existing.payment.provider !== "demo") {
-    return jsonError("This order is handled by PayMongo.", 409);
+    return jsonError("This order uses the hosted payment page.", 409);
   }
   if (existing.status !== "pending") {
     return NextResponse.json({ order: existing });
@@ -27,20 +43,20 @@ export async function POST(request: Request, { params }: Context) {
   const body = await readBody(request);
   const outcome = asString(body?.outcome);
   if (!["paid", "failed", "cancelled"].includes(outcome)) {
-    return jsonError("Choose a valid demo outcome.", 422);
+    return jsonError("Choose a valid payment outcome.", 422);
   }
 
   const now = new Date().toISOString();
-  const order =
-    (await transitionOrder(reference, {
+  const transitioned = await guard(() =>
+    transitionOrder(reference, {
       status: outcome as "paid" | "failed" | "cancelled",
       type: `demo.payment_${outcome}`,
       message:
         outcome === "paid"
-          ? "Demo gateway authorised the payment."
+          ? "Payment authorised by the checkout gateway."
           : outcome === "failed"
-            ? "Demo gateway declined the payment."
-            : "Demo gateway checkout was cancelled.",
+            ? "Payment declined by the checkout gateway."
+            : "Checkout was cancelled before payment.",
       payment:
         outcome === "paid"
           ? {
@@ -49,8 +65,10 @@ export async function POST(request: Request, { params }: Context) {
               paidAt: now,
             }
           : { providerStatus: outcome },
-      ...(outcome === "paid" ? {} : { failureReason: "Demo payment was not completed." }),
-    })) ?? existing;
+      ...(outcome === "paid" ? {} : { failureReason: "Payment was not completed." }),
+    }),
+  );
+  if (transitioned.response) return transitioned.response;
 
-  return NextResponse.json({ order });
+  return NextResponse.json({ order: transitioned.data ?? existing });
 }

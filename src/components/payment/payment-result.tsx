@@ -25,19 +25,17 @@ const MAX_POLLS = 5;
 const eventLabels: Record<string, string> = {
   "order.created": "Order created",
   "demo.session_created": "Payment session opened",
-  "paymongo.session_created": "Payment session opened",
-  "paymongo.session_failed": "Payment session could not be created",
-  "paymongo.session_verified": "Payment confirmed by our processor",
-  "paymongo.session_expired": "Checkout session expired",
-  "paymongo.session_active": "Payment still processing",
+  "xendit.invoice_created": "Payment session opened",
+  "xendit.invoice_failed": "Payment session could not be created",
+  "xendit.invoice_verified": "Payment confirmed by our processor",
+  "xendit.invoice_expired": "Checkout session expired",
+  "xendit.invoice_active": "Payment still processing",
   "demo.payment_paid": "Payment authorised",
   "demo.payment_failed": "Payment declined",
   "demo.payment_cancelled": "Checkout cancelled",
   "checkout.cancelled": "Checkout cancelled",
-  "webhook.checkout_session.payment.paid": "Payment confirmed",
-  "webhook.payment.paid": "Payment confirmed",
-  "webhook.payment.failed": "Payment declined",
-  "webhook.checkout_session.expired": "Checkout session expired",
+  "webhook.invoice.paid": "Payment confirmed",
+  "webhook.invoice.expired": "Checkout session expired",
 };
 
 function eventLabel(event: PaymentEvent): string {
@@ -225,7 +223,7 @@ export function PaymentResult({ reference }: { reference: string }) {
     PAYMENT_METHODS.find((entry) => entry.id === order.payment.method)?.label ??
     order.payment.method;
   const providerLabel =
-    order.payment.provider === "paymongo"
+    order.payment.provider === "xendit"
       ? "Secure hosted checkout"
       : "KainTayo checkout";
 
@@ -233,7 +231,7 @@ export function PaymentResult({ reference }: { reference: string }) {
   // provider, so only customer-safe reasons are surfaced in the interface.
   const failureReason =
     order.payment.failureReason &&
-    !/(paymongo|demo|test)/i.test(order.payment.failureReason)
+    !/(paymongo|xendit|demo|test)/i.test(order.payment.failureReason)
       ? order.payment.failureReason
       : "";
 
@@ -327,8 +325,8 @@ export function PaymentResult({ reference }: { reference: string }) {
         {warning ? (
           <p className="mt-4 rounded-2xl border border-mango/30 bg-mango/10 px-4 py-3 text-xs leading-relaxed text-[#7a5207]">
             We couldn&apos;t confirm the payment status automatically. The status
-            shown is what we have stored locally; server-side checks will keep it
-            in sync.
+            shown is what we have stored on our servers; server-side checks will
+            keep it in sync.
           </p>
         ) : null}
 

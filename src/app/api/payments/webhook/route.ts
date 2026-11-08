@@ -1,125 +1,126 @@
 import { NextResponse } from "next/server";
-import { asString, readBody } from "@/server/api";
-import { listOrders, transitionOrder } from "@/server/order-store";
-import { verifyWebhookSignature } from "@/server/paymongo";
-import type { Order } from "@/lib/types";
+import { asString, guard } from "@/server/api";
+import { getOrder, transitionOrder } from "@/server/order-store";
+import { verifyCallbackToken } from "@/server/xendit";
 
 export const dynamic = "force-dynamic";
 
-type WebhookResource = {
+/**
+ * Xendit invoice callbacks.
+ *
+ * Signature: the `x-callback-token` header must match `XENDIT_CALLBACK_TOKEN`.
+ * Only this server-side endpoint may flip an order to `paid` — the browser
+ * never reports a successful payment.
+ *
+ * Retries are safe: the order row is located by `external_id` (our order
+ * reference), a single `payments` row is updated rather than inserted, and
+ * `transitionOrder` refuses to move a terminal state backwards. A duplicate
+ * delivery therefore changes nothing and still returns 200.
+ */
+type XenditPayload = {
+  event?: string;
   id?: string;
-  type?: string;
-  attributes?: Record<string, unknown>;
-};
-
-type WebhookPayload = {
-  data?: {
-    id?: string;
-    attributes?: {
-      type?: string;
-      livemode?: boolean;
-      data?: WebhookResource;
-    };
-  };
+  external_id?: string;
+  status?: string;
+  paid_amount?: number | string;
+  payment_method?: string;
+  payment_channel?: string;
+  payment_id?: string;
+  paid_at?: string;
+  data?: Record<string, unknown>;
 };
 
 export async function POST(request: Request) {
   const rawBody = await request.text();
-  const signature = verifyWebhookSignature(
-    rawBody,
-    request.headers.get("paymongo-signature"),
-  );
 
-  if (!signature.valid) {
+  const token = verifyCallbackToken(request.headers.get("x-callback-token"));
+  if (!token.valid) {
     return NextResponse.json(
-      { error: "Invalid webhook signature.", reason: signature.reason },
+      { error: "Invalid webhook token.", reason: token.reason },
       { status: 401 },
     );
   }
-  if (signature.reason) {
-    console.warn(`[paymongo] Webhook accepted with warning: ${signature.reason}`);
+  if (token.reason) {
+    console.warn(`[xendit] Webhook accepted with warning: ${token.reason}`);
   }
 
-  let payload: WebhookPayload;
+  let payload: XenditPayload;
   try {
-    payload = JSON.parse(rawBody) as WebhookPayload;
+    payload = JSON.parse(rawBody) as XenditPayload;
   } catch {
     return NextResponse.json({ error: "Malformed JSON payload." }, { status: 400 });
   }
 
-  const eventType = payload.data?.attributes?.type ?? "";
-  const resource = payload.data?.attributes?.data;
-  const attributes = resource?.attributes ?? {};
-  const metadata = (attributes.metadata ?? {}) as Record<string, unknown>;
+  // Invoice callbacks arrive flat; the newer unified webhook wraps them in `data`.
+  const invoice =
+    payload.data && typeof payload.data === "object"
+      ? (payload.data as XenditPayload)
+      : payload;
 
-  const orders = await listOrders();
+  const status = asString(invoice.status).toUpperCase();
+  const invoiceId = asString(invoice.id);
+  const externalId = asString(invoice.external_id);
 
-  const referenceCandidate =
-    asString(attributes.reference_number) || asString(metadata.reference);
-
-  let order: Order | undefined = referenceCandidate
-    ? orders.find((entry) => entry.reference === referenceCandidate)
-    : undefined;
-
-  if (!order && resource?.type === "checkout_session" && resource.id) {
-    order = orders.find((entry) => entry.payment.sessionId === resource.id);
-  }
-
-  if (!order) {
-    // PayMongo payment resources don't always carry the session reference, so
-    // fall back to scanning the payload for one of our own reference numbers.
-    const match = rawBody.match(/KT-\d{6}-[A-Z0-9]{4}/);
-    if (match) {
-      order = orders.find((entry) => entry.reference === match[0]);
+  // A database problem must surface as 503/500 JSON so Xendit retries later
+  // instead of the request crashing.
+  const found = await guard(async () => {
+    if (externalId) {
+      const byReference = await getOrder(externalId);
+      if (byReference) return byReference;
     }
-  }
+    // Fallback: scan the payload for one of our own reference numbers.
+    const match = rawBody.match(/KT-\d{6}-[A-Z0-9]{4}/);
+    return match ? await getOrder(match[0]) : undefined;
+  });
+  if (found.response) return found.response;
 
+  const order = found.data;
   if (!order) {
-    console.warn(`[paymongo] Webhook ${eventType} did not match a local order.`);
+    console.warn(
+      `[xendit] Webhook ${status || payload.event || "unknown"} did not match a local order.`,
+    );
     return NextResponse.json({ received: true, ignored: "unknown_order" });
   }
 
-  const payments = Array.isArray(attributes.payments)
-    ? (attributes.payments as Array<{ id?: string; attributes?: { status?: string } }>)
-    : [];
-  const paidPayment = payments.find(
-    (payment) => payment.attributes?.status === "paid",
-  );
-  const paymentId =
-    resource?.type === "payment" ? resource.id : paidPayment?.id;
+  const paymentId = asString(invoice.payment_id) || undefined;
+  const providerStatus = status || "UNKNOWN";
 
-  if (eventType === "checkout_session.payment.paid" || eventType === "payment.paid") {
-    await transitionOrder(order.reference, {
-      status: "paid",
-      type: `webhook.${eventType}`,
-      message: "PayMongo webhook confirms the payment.",
+  let transition;
+  if (status === "PAID") {
+    transition = {
+      status: "paid" as const,
+      type: "webhook.invoice.paid",
+      message: "Payment confirmed by the payment provider webhook.",
       payment: {
-        providerStatus: "paid",
-        paymentId,
-        paidAt: new Date().toISOString(),
-        ...(order.payment.sessionId ? { sessionId: order.payment.sessionId } : {}),
+        providerStatus,
+        paidAt: asString(invoice.paid_at) || new Date().toISOString(),
+        ...(paymentId ? { paymentId } : {}),
+        ...(invoiceId ? { sessionId: invoiceId } : {}),
       },
-    });
-  } else if (eventType === "payment.failed") {
-    await transitionOrder(order.reference, {
-      status: "failed",
-      type: `webhook.${eventType}`,
-      message: "PayMongo webhook reports a failed payment.",
-      payment: { providerStatus: "failed" },
-      failureReason:
-        asString(attributes.failure_reason) || "The payment was declined.",
-    });
-  } else if (eventType === "checkout_session.expired") {
-    await transitionOrder(order.reference, {
-      status: "cancelled",
-      type: `webhook.${eventType}`,
-      message: "PayMongo webhook reports the checkout session expired.",
-      payment: { providerStatus: "expired" },
+    };
+  } else if (status === "EXPIRED") {
+    transition = {
+      status: "cancelled" as const,
+      type: "webhook.invoice.expired",
+      message: "Payment provider reports the checkout session expired.",
+      payment: { providerStatus },
       failureReason: "Checkout session expired.",
-    });
+    };
+  } else if (status === "PENDING") {
+    // Informational only — never changes the order status.
+    return NextResponse.json({ received: true, ignored: "pending" });
   } else {
-    return NextResponse.json({ received: true, ignored: eventType || "unknown_event" });
+    return NextResponse.json({
+      received: true,
+      ignored: asString(payload.event) || status || "unknown_event",
+    });
   }
 
-  return NextResponse.json({ received: true, reference: order.reference });
+  const applied = await guard(() => transitionOrder(order.reference, transition));
+  if (applied.response) return applied.response;
+
+  return NextResponse.json({
+    received: true,
+    reference: applied.data?.reference ?? order.reference,
+  });
 }

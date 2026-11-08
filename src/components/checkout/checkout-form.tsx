@@ -20,7 +20,7 @@ import { Spinner } from "@/components/ui/spinner";
 type CreatePaymentResponse = {
   reference: string;
   checkoutUrl: string;
-  mode: "paymongo" | "demo";
+  mode: "xendit" | "demo";
   total: number;
 };
 
@@ -50,7 +50,7 @@ export function CheckoutForm({
   defaultName,
   defaultEmail,
 }: {
-  mode: "paymongo" | "demo";
+  mode: "xendit" | "demo";
   defaultName: string;
   defaultEmail: string;
 }) {
@@ -120,7 +120,7 @@ export function CheckoutForm({
 
       push({
         title:
-          result.mode === "paymongo"
+          result.mode === "xendit"
             ? "Redirecting to secure checkout"
             : "Opening secure checkout",
         description: `Order ${result.reference} · ${formatPeso(result.total)}`,
@@ -135,8 +135,8 @@ export function CheckoutForm({
         // Storage may be unavailable in private modes; the receipt still works.
       }
 
-      // Demo checkout stays in-app; PayMongo takes over the browser.
-      if (result.mode === "paymongo") {
+      // Built-in gateway stays in-app; Xendit takes over the browser.
+      if (result.mode === "xendit") {
         window.location.assign(result.checkoutUrl);
       } else {
         router.push(result.checkoutUrl);
@@ -383,7 +383,7 @@ export function CheckoutForm({
 
               <div
                 className={
-                  mode === "paymongo"
+                  mode === "xendit"
                     ? "flex items-start gap-2.5 rounded-2xl border border-leaf/20 bg-leaf/5 px-4 py-3 text-xs leading-relaxed text-leaf"
                     : "flex items-start gap-2.5 rounded-2xl border border-mango/30 bg-mango/10 px-4 py-3 text-xs leading-relaxed text-[#7a5207]"
                 }
@@ -392,7 +392,7 @@ export function CheckoutForm({
                   <circle cx="12" cy="12" r="9" />
                   <path d="M12 11v5M12 7.5v.5" strokeLinecap="round" />
                 </svg>
-                {mode === "paymongo" ? (
+                {mode === "xendit" ? (
                   <span>
                     <strong className="font-semibold">Secure checkout.</strong> You&apos;ll
                     be taken to an encrypted payment page hosted by our payment

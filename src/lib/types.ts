@@ -93,10 +93,11 @@ export type PaymentEvent = {
 };
 
 export type PaymentSummary = {
-  provider: "paymongo" | "demo";
+  provider: "xendit" | "demo";
   method: PaymentMethod;
+  /** Xendit invoice id, or the built-in gateway reference. */
   sessionId?: string;
-  paymentIntentId?: string;
+  /** Provider-side payment/transaction id. */
   paymentId?: string;
   checkoutUrl?: string;
   providerStatus?: string;
@@ -108,6 +109,8 @@ export type Order = {
   reference: string;
   createdAt: string;
   updatedAt: string;
+  /** Account that placed the order — used for ownership checks. */
+  userId?: string;
   customer: Customer;
   items: OrderItem[];
   subtotal: number;
@@ -117,6 +120,8 @@ export type Order = {
   payment: PaymentSummary;
   events: PaymentEvent[];
 };
+
+export type UserRole = "customer" | "seller" | "admin";
 
 export type ApiError = {
   error: string;

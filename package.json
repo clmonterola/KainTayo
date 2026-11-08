@@ -2,7 +2,7 @@
   "name": "kaintayo",
   "version": "1.0.0",
   "private": true,
-  "description": "KainTayo - Food ordering demo with PayMongo test-mode payments",
+  "description": "KainTayo - Filipino food ordering demo with Supabase persistence and Xendit test-mode payments",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
     "next": "^15.5.29",
     "react": "19.1.1",
     "react-dom": "19.1.1"

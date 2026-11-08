@@ -1,81 +1,90 @@
 import { NextResponse } from "next/server";
-import { jsonError, requireApiSession } from "@/server/api";
+import { canAccessOrder, guard, jsonError, requireActor } from "@/server/api";
 import { getOrder, transitionOrder } from "@/server/order-store";
 import {
-  mapSessionStatus,
-  paymongoEnabled,
-  retrieveCheckoutSession,
-  PayMongoError,
-} from "@/server/paymongo";
+  mapInvoiceStatus,
+  retrieveInvoice,
+  xenditEnabled,
+  XenditError,
+} from "@/server/xendit";
 
 export const dynamic = "force-dynamic";
 
 type Context = { params: Promise<{ reference: string }> };
 
 export async function GET(_request: Request, { params }: Context) {
-  const auth = await requireApiSession();
-  if (auth.response) return auth.response;
+  const actor = await requireActor();
+  if (actor.response) return actor.response;
 
   const { reference } = await params;
-  let order = await getOrder(reference);
+  const loaded = await guard(() => getOrder(reference));
+  if (loaded.response) return loaded.response;
+
+  let order = loaded.data;
   if (!order) return jsonError("We couldn't find that order.", 404);
+
+  // Customers only ever see their own orders (admins/sellers by role).
+  const allowed = await guard(() => canAccessOrder(order!, actor.actor));
+  if (allowed.response) return allowed.response;
+  if (!allowed.data) return jsonError("You don't have access to that order.", 403);
 
   let warning: string | undefined;
 
+  // Server-side verification: the invoice state is read from Xendit with the
+  // secret key, never reported by the browser. The webhook stays authoritative.
   if (
-    order.payment.provider === "paymongo" &&
+    order.payment.provider === "xendit" &&
     order.payment.sessionId &&
     order.status === "pending" &&
-    paymongoEnabled()
+    xenditEnabled()
   ) {
     try {
-      const session = await retrieveCheckoutSession(order.payment.sessionId);
-      const mapped = mapSessionStatus(session.status);
+      const invoice = await retrieveInvoice(order.payment.sessionId);
+      const mapped = mapInvoiceStatus(invoice.status);
 
       if (mapped === "paid") {
-        const paidPayment = session.payments.find((payment) => payment.status === "paid");
         order =
           (await transitionOrder(reference, {
             status: "paid",
-            type: "paymongo.session_verified",
-            message: `PayMongo confirms the checkout session is paid (${session.status}).`,
+            type: "xendit.invoice_verified",
+            message: `Xendit confirms the invoice is paid (${invoice.status}).`,
             payment: {
-              providerStatus: session.status,
-              paymentId: paidPayment?.id,
-              paidAt: new Date().toISOString(),
+              providerStatus: invoice.status,
+              paidAt: invoice.paidAt || new Date().toISOString(),
+              ...(invoice.paymentId ? { paymentId: invoice.paymentId } : {}),
             },
           })) ?? order;
       } else if (mapped === "cancelled") {
         order =
           (await transitionOrder(reference, {
             status: "cancelled",
-            type: "paymongo.session_expired",
-            message: "PayMongo reports the checkout session expired.",
-            payment: { providerStatus: session.status },
+            type: "xendit.invoice_expired",
+            message: "Xendit reports the checkout session expired.",
+            payment: { providerStatus: invoice.status },
             failureReason: "Checkout session expired.",
           })) ?? order;
       } else if (mapped === "pending") {
         order =
           (await transitionOrder(reference, {
             status: "pending",
-            type: "paymongo.session_active",
-            message: "PayMongo reports the checkout session is still active.",
-            payment: { providerStatus: session.status },
+            type: "xendit.invoice_active",
+            message: "Xendit reports the checkout session is still active.",
+            payment: { providerStatus: invoice.status },
           })) ?? order;
       }
     } catch (error) {
       warning =
-        error instanceof PayMongoError
+        error instanceof XenditError
           ? error.message
-          : "We couldn't verify with PayMongo just now.";
-      console.error(`[paymongo] Verification failed for ${reference}:`, warning);
+          : "We couldn't verify with Xendit just now.";
+      console.error(`[xendit] Verification failed for ${reference}:`, warning);
     }
   }
 
   return NextResponse.json({
     order,
     mode: order.payment.provider,
-    verified: order.payment.provider === "paymongo" && !warning,
+    verified: order.payment.provider === "xendit" && !warning,
     ...(warning ? { warning } : {}),
   });
 }

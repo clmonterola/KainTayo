@@ -1,27 +1,39 @@
 # KainTayo — Filipino food ordering demo
 
 A complete, presentation-ready food ordering website: demo login, server-backed menu
-CRUD, cart, checkout, and **PayMongo** hosted checkout with GCash, Maya, and cards.
-Built with Next.js App Router, TypeScript, and Tailwind CSS v4.
+CRUD, cart, checkout, and **Xendit** hosted checkout with GCash, Maya, and cards.
+Built with Next.js App Router, TypeScript, Tailwind CSS v4, and **Supabase PostgreSQL**.
 
 The menu is fully API-driven. No sample dishes, prices, images, or categories are
 hardcoded in the frontend; a fresh install starts with an empty menu until products are
-created through the admin API or loaded from your database adapter.
+created through the admin API. Every read and write goes to Supabase — there is no local
+JSON fallback in the product or order paths.
 
 > **Demo only.** No real food is delivered and no real money is charged. Payments run in
-> PayMongo test mode, or through a built-in demo gateway when no API key is configured.
+> Xendit **test mode**, or through a built-in local gateway when no API key is configured.
 
 ---
 
-## Demo credentials
+## Accounts
 
-| Field | Value |
-| --- | --- |
-| Email | `demo@kaintayo.ph` |
-| Password | `kain123` |
+| Role | Email | Password |
+| --- | --- | --- |
+| Admin | `demo@kaintayo.ph` | `kain123` |
+| Seller | `seller@kaintayo.ph` | `kain123` |
+| Customer | `customer@kaintayo.ph` | `kain123` |
 
-The login screen shows these credentials and has a **Fill in** button. Change them with
-`DEMO_EMAIL` / `DEMO_PASSWORD` in `.env.local`.
+All three are seeded by the SQL migration into `public.users`. The login screen shows the
+admin credentials and has a **Fill in** button; change them with `DEMO_EMAIL` /
+`DEMO_PASSWORD` in `.env.local`.
+
+Authorization is role-based and checked **on the server** on every request:
+
+| | Admin | Seller | Customer |
+| --- | --- | --- | --- |
+| Create/edit/delete dishes | all | only their own (`products.seller_id`) | no |
+| Read menu / categories | yes | yes | yes |
+| Read orders | all | own + orders containing their dishes | own only |
+| Verify/cancel a payment | yes | their orders | their orders only |
 
 ---
 
@@ -31,23 +43,17 @@ The login screen shows these credentials and has a **Fill in** button. Change th
 # 1. Install dependencies
 npm install
 
-# 2. Create your env file. A ready-to-run .env.local is already included;
-#    to start clean, copy .env.example to .env.local (Windows: Copy-Item).
+# 2. Environment — a ready-to-run .env.local is included (it is git-ignored).
+#    To start clean: copy .env.example .env.local  (Windows: Copy-Item)
 
-# 3. Run the app
+# 3. Apply the database migration (see the next section)
+
+# 4. Run the app
 npm run dev
 ```
 
 Open <http://localhost:3000>. You are redirected to `/login`, then to the menu after
-signing in with the demo account. The menu starts empty by design. Add products at
-`/admin`, or connect the product data-access layer to your database.
-
-### Production-style preview
-
-```bash
-npm run build
-npm start
-```
+signing in. The menu starts empty by design — add products at `/admin`.
 
 ### Scripts
 
@@ -57,44 +63,105 @@ npm start
 | `npm run build` | Production build |
 | `npm start` | Serve the production build |
 | `npm run typecheck` | `tsc --noEmit` |
+| `node scripts/hash-password.mjs "<pw>"` | Print a `public.users.password_hash` |
+| `node scripts/import-json-to-supabase.mjs` | One-off import of legacy `.data/*.json` |
 
 ---
 
-## The demo flow
+## 1. Supabase setup
 
-1. **Login** → demo credentials, validation, signed httpOnly session cookie.
-2. **Menu** → hero, search, API-driven category filters, availability filter, sorting,
-   quick-view dialog, add to bag. Shows loading, error, and empty states.
-3. **Menu management** (`/admin`) → create, edit, delete, and toggle availability. All
-   writes go through authenticated API routes and are persisted server-side.
-4. **Bag** → quantity steppers, remove/clear confirmations, delivery-fee progress.
-5. **Checkout** → customer details, delivery address, notes, payment method (GCash,
-   Maya, card), server-priced totals.
-6. **Payment** → PayMongo hosted checkout (or the demo gateway), then success/cancel
-   return, server-side verification, and webhook reconciliation.
-7. **Orders** → payment history with references, statuses, receipts, and an audit trail.
+### Apply the migration
+
+1. Open the Supabase Dashboard → your project → **SQL Editor** → **New query**.
+2. Paste the whole file
+   [`supabase/migrations/20261108000000_kaintayo_schema.sql`](supabase/migrations/20261108000000_kaintayo_schema.sql)
+   and press **Run** (`Ctrl+Enter`). It is idempotent — safe to re-run.
+3. Verify with the checklist at the bottom of that file:
+
+   ```sql
+   select table_name, row_security from information_schema.tables
+    where table_schema = 'public' order by table_name;   -- row_security = YES for all
+   select email, role from public.users order by role;   -- admin / seller / customer
+   select count(*) from pg_policies where schemaname = 'public';  -- 15
+   ```
+
+### Tables created
+
+`users`, `categories`, `products`, `orders`, `order_items`, `payments`,
+`payment_events` — each with primary keys, foreign keys (`order_items → orders`,
+`order_items → products`, `orders → users`, `products → categories`, `payments → orders`,
+…), `created_at`/`updated_at` triggers, constraints (`check` on status/role/price/
+quantity), unique indexes, and query indexes (`orders(reference)` unique,
+`orders(user_id)`, `order_items(order_id)`, `payments(order_id)` unique, …).
+
+### Keys
+
+| Variable | Where | Purpose |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | `.env.local`, public | Project URL |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | `.env.local`, public | `sb_publishable_…` — public catalog reads |
+| `SUPABASE_SECRET_KEY` | `.env.local`, **server only** | `sb_secret_…` — every write |
+
+Get the secret key from **Project Settings → API Keys** and put it in `.env.local`:
+
+```env
+SUPABASE_SECRET_KEY=sb_secret_xxxxxxxxxxxxxxxx
+```
+
+`.env.local` and `.env` are already listed in `.gitignore` (`.env*.local`, `.env`), so the
+key never reaches Git. It is read only by `src/server/supabase.ts`, which imports
+`server-only` — importing it from a client component fails the build. Never add a
+`NEXT_PUBLIC_` prefix to it and never log it.
+
+### Row Level Security
+
+RLS is **enabled on every table** and never disabled to make the app work:
+
+- `anon` (publishable key): `SELECT` on `products` and `categories` only.
+- `authenticated`: customers see their own rows, sellers their own products/orders,
+  admins everything — policies are written against `auth.uid()` and helper functions
+  `is_admin()`, `is_seller()`, `can_view_order()`.
+- No client `INSERT`/`UPDATE`/`DELETE` policies exist for orders, payments, or accounts.
+
+Server routes use the service-role key (which bypasses RLS by design) **and** still run
+their own checks first — session, role, and ownership. RLS is defence in depth, not a
+substitute for validating each API request, and privileged access is never used instead
+of an authorization check.
+
+### Migrating old JSON data (optional)
+
+If you still have `.data/products.json` / `.data/orders.json`, import them after the
+migration runs:
+
+```bash
+node scripts/import-json-to-supabase.mjs
+```
+
+It is idempotent (existing names/references are skipped). Once the rows are verified in
+the Table Editor, the JSON files are no longer read by the app — you can delete `.data/`.
 
 ---
 
-## PayMongo setup (test mode)
+## 2. Xendit setup (test mode)
 
-1. Create a free account at <https://dashboard.paymongo.com> and stay in **Test mode**.
-2. Copy your **secret** key (`sk_test_…`) from Developers → API keys.
+1. Create a free account at <https://dashboard.xendit.co> and stay in **Test mode**.
+2. Settings → Developers → API keys → copy the secret key (`xnd_development_…`).
 3. Put it in `.env.local`:
 
    ```env
-   PAYMONGO_SECRET_KEY=sk_test_xxxxxxxxxxxxxxxxx
+   XENDIT_SECRET_KEY=xnd_development_xxxxxxxxxxxxx
+   XENDIT_MODE=test
    ```
 
-4. Restart the dev server. Checkout now creates a real PayMongo Checkout Session and
-   redirects to the hosted page.
+4. Restart the dev server. Checkout now creates a real Xendit invoice and redirects to
+   the hosted page.
 
-> **Never** put the secret key in `NEXT_PUBLIC_*` or in client code. Only
-> `src/server/paymongo.ts` reads it, and the module is marked `server-only`.
+> **Never** put the key in `NEXT_PUBLIC_*` or in client code. Only `src/server/xendit.ts`
+> reads it, and the module is marked `server-only`.
 
 ### Return URLs
 
-Localhost redirects work for development, but PayMongo needs a publicly reachable URL for
+Localhost redirects work for development, but Xendit needs a publicly reachable URL for
 reliable returns and webhooks. Use a tunnel:
 
 ```bash
@@ -113,37 +180,51 @@ Without it, the app falls back to the request origin.
 
 ### Webhooks
 
-1. In the PayMongo dashboard → Developers → Webhooks, add:
+1. Xendit Dashboard → Settings → Developers → Callbacks → add:
 
    ```
    https://your-tunnel-url/api/payments/webhook
    ```
 
-2. Subscribe to at least:
-   - `checkout_session.payment.paid`
-   - `payment.failed`
-   - `checkout_session.expired`
-3. Copy the signing secret into `.env.local`:
+   and choose the **Invoice** events (`invoice.paid`, `invoice.expired`).
+
+2. Copy the **callback token** into `.env.local`:
 
    ```env
-   PAYMONGO_WEBHOOK_SECRET=whsk_xxxxxxxx
-   PAYMONGO_MODE=test
+   XENDIT_CALLBACK_TOKEN=your-callback-token
    ```
 
-The webhook route verifies `Paymongo-Signature` with HMAC-SHA256 over
-`` `${t}.${rawBody}` `` and compares against `te` (test) or `li` (live). Invalid
-signatures get `401`. Duplicate events are harmless: paid/failed/cancelled are terminal
-states and cannot be downgraded by a late redirect.
+The route verifies the `x-callback-token` header with `timingSafeEqual` and rejects
+mismatches with `401` (in production a missing token is also rejected). Duplicate events
+are harmless: there is one `payments` row per order (unique FK) and terminal states never
+regress, so a retry can neither create a duplicate record nor downgrade a paid order.
 
-Full details, payloads, and a curl signature example are in
-[`docs/paymongo.md`](docs/paymongo.md).
+Full payloads, a local curl test, and the test-mode checklist are in
+[`docs/payments.md`](docs/payments.md).
 
-### No-key demo gateway
+### No-key gateway
 
-With `PAYMONGO_SECRET_KEY` empty, checkout opens `/payment/mock/[reference]`, a small
-wallet-styled screen with **Authorize**, **Decline**, and **Cancel** actions. It writes the
-same order transitions as the real integration, so the result page, order history, and
-audit trail all behave identically. This is the quickest path for a class demo.
+With `XENDIT_SECRET_KEY` empty, checkout opens `/payment/mock/[reference]`, a small
+wallet-styled screen with **Authorise**, **Decline**, and **Cancel** actions. It writes the
+same order transitions through the server, so the receipt, order history, and audit trail
+behave identically. This is the quickest path for a class demo.
+
+---
+
+## The demo flow
+
+1. **Login** → credentials checked against `public.users` (scrypt) with a fallback to the
+   configured local account, validation, signed httpOnly session cookie.
+2. **Menu** → hero, search, API-driven category filters, availability filter, sorting,
+   quick-view dialog, add to bag. Shows loading, error, and empty states.
+3. **Menu management** (`/admin`) → create, edit, delete, and toggle availability. Requires
+   a `seller` or `admin` role; sellers only touch dishes they own.
+4. **Bag** → quantity steppers, remove/clear confirmations, delivery-fee progress.
+5. **Checkout** → customer details, delivery address, notes, payment method (GCash, Maya,
+   card), server-priced totals.
+6. **Payment** → Xendit hosted checkout (or the local gateway), then success/cancel
+   return, server-side verification, and webhook reconciliation.
+7. **Orders** → role-scoped history with references, statuses, receipts, and an audit trail.
 
 ---
 
@@ -160,22 +241,25 @@ src/
 │  │  ├─ orders/                Payment/order history
 │  │  ├─ admin/                 Menu CRUD
 │  │  └─ payment/
-│  │     ├─ mock/[reference]/   Built-in demo gateway (no-key mode)
+│  │     ├─ mock/[reference]/   Built-in gateway (no-key mode)
 │  │     ├─ success/            Server-verified receipt & status
 │  │     └─ cancel/             Cancellation + retry
 │  └─ api/
 │     ├─ auth/                  login · logout · me
-│     ├─ products/              GET (public) · POST/PATCH/DELETE (auth)
-│     ├─ categories/            GET dynamic category names
-│     ├─ orders/                GET (auth)
+│     ├─ products/              GET (public) · POST/PATCH/DELETE (seller/admin)
+│     ├─ categories/            GET category names from public.categories
+│     ├─ orders/                GET (role-scoped)
 │     └─ payments/
-│        ├─ create/             Server-priced order + checkout session
+│        ├─ create/             Server-priced order + Xendit invoice
 │        ├─ [reference]/        GET verification · cancel
-│        ├─ mock/[reference]/   Demo outcomes
-│        └─ webhook/            Signed PayMongo notifications
+│        ├─ mock/[reference]/   Built-in gateway outcomes
+│        └─ webhook/            x-callback-token verified notifications
 ├─ components/                  UI kit, feature views, providers
 ├─ lib/                         Types, API services, pricing, validation, formatting
-└─ server/                      Auth, product/order stores, PayMongo (server-only)
+└─ server/                      auth, api helpers, supabase, stores, xendit (server-only)
+
+supabase/migrations/            SQL schema + RLS policies + seeded accounts
+scripts/                        password hashing, legacy JSON import
 ```
 
 The customer menu and admin use `src/lib/services/products.ts` for all product reads
@@ -184,34 +268,29 @@ frontend.
 
 ### Where money logic lives
 
-- **Totals are recalculated on the server** from the product store in
+- **Totals are recalculated on the server** from `public.products` in
   `POST /api/payments/create`; client-supplied prices are ignored.
 - **Payment state** is a small state machine (`pending → paid | failed | cancelled`) in
   `src/server/order-store.ts`. Terminal states never regress.
-- **Verification** happens on `GET /api/payments/[reference]` (fetch the Checkout Session
-  from PayMongo) and in the signed webhook. The success redirect alone never marks an
-  order paid.
+- **Verification** happens on `GET /api/payments/[reference]` (invoice fetched from Xendit
+  with the secret key) and in the token-verified webhook. The success redirect alone never
+  marks an order paid, and the browser never reports payment success.
+- **Idempotency** — one `payments` row per order plus a unique `payments.provider_reference`
+  index; webhook retries update instead of inserting.
 - **Secrets** only exist in server modules and environment variables.
 
-### Storage and database integration
+### Data access
 
-The current demo uses a small JSON adapter so it runs without external services:
+- `src/server/product-store.ts` — `products` + `categories` (create/update/delete dishes).
+- `src/server/order-store.ts` — `orders`, `order_items`, `payments`, `payment_events`,
+  plus `transitionOrder()` (the status state machine).
+- `src/server/user-store.ts` — account lookup, scrypt verification, role resolution.
+- `src/server/supabase.ts` — the single place keys are read; `getServerClient()` for
+  public reads, `requireServerAccess()` for writes (fails fast with a clear `503` if the
+  secret key is missing).
 
-- `.data/products.json` — product records. It starts empty and is created on first read;
-  there is no seed file and no sample menu.
-- `.data/orders.json` — orders, payment records, audit events.
-- `localStorage` — the shopping bag (`kaintayo.cart.v1`).
-
-Both `.data` files are git-ignored. On serverless hosts (Vercel) the filesystem is
-ephemeral, so connect a real database before deploying for real.
-
-**Swapping in a database:** `src/server/product-store.ts` is the only product
-data-access layer. Replace its JSON reads/writes with Prisma/SQL queries and keep the
-exported function contract. The UI, cart, checkout, and payment flows already use the
-same API routes and will pick up database records automatically. `GET /api/categories`
-currently derives category names from product records; when you add a categories table,
-update `listCategories()` to read it. Product images must be `https://` URLs or
-`/storage/...` references. File uploads are intentionally not implemented in this demo.
+Product images must be `https://` URLs or `/storage/...` references. File uploads are
+intentionally not implemented in this demo.
 
 ---
 
@@ -219,23 +298,24 @@ update `listCategories()` to read it. Product images must be `https://` URLs or
 
 | Method | Route | Auth | Purpose |
 | --- | --- | --- | --- |
-| `POST` | `/api/auth/login` | – | Demo login, sets signed cookie |
+| `POST` | `/api/auth/login` | – | Login, sets signed cookie |
 | `POST` | `/api/auth/logout` | – | Clears session |
 | `GET` | `/api/auth/me` | cookie | Current user |
 | `GET` | `/api/products` | – | Menu |
-| `GET` | `/api/categories` | – | Dynamic categories from product records |
-| `POST` | `/api/products` | cookie | Create dish |
-| `PATCH` | `/api/products/:id` | cookie | Update dish |
-| `DELETE` | `/api/products/:id` | cookie | Delete dish |
-| `GET` | `/api/orders` | cookie | Order/payment history |
-| `POST` | `/api/payments/create` | cookie | Create order + session |
-| `GET` | `/api/payments/:reference` | cookie | Verify + fetch order |
-| `POST` | `/api/payments/:reference/cancel` | cookie | Mark pending order cancelled |
-| `POST` | `/api/payments/mock/:reference` | cookie | Demo gateway outcome |
-| `POST` | `/api/payments/webhook` | signature | PayMongo webhook |
+| `GET` | `/api/categories` | – | Categories from `public.categories` |
+| `POST` | `/api/products` | cookie + seller/admin | Create dish |
+| `PATCH` | `/api/products/:id` | cookie + owner/admin | Update dish |
+| `DELETE` | `/api/products/:id` | cookie + owner/admin | Delete dish |
+| `GET` | `/api/orders` | cookie, role-scoped | Order/payment history |
+| `POST` | `/api/payments/create` | cookie | Create order + Xendit invoice |
+| `GET` | `/api/payments/:reference` | cookie + ownership | Verify + fetch order |
+| `POST` | `/api/payments/:reference/cancel` | cookie + ownership | Mark pending order cancelled |
+| `POST` | `/api/payments/mock/:reference` | cookie + ownership | Built-in gateway outcome |
+| `POST` | `/api/payments/webhook` | `x-callback-token` | Xendit webhook |
 
 Errors return `{ "error": "message", "fields": { "field": "message" } }`. The UI maps
-`fields` back onto inputs.
+`fields` back onto inputs; database/configuration problems come back as clean `500`/`503`
+JSON instead of stack traces.
 
 ---
 
@@ -253,18 +333,24 @@ states, and confirmations for destructive actions.
 
 ## Limitations (by design)
 
-- Single demo account, not multi-tenant; every signed-in user sees the same orders.
-- JSON file storage, not a database or queue. The product store is ready to swap for one.
 - No image upload/storage pipeline yet; products accept image URLs or storage references.
 - No email/SMS delivery, no real delivery logistics, no refunds.
-- The demo gateway is clearly labelled and only runs when PayMongo is not configured.
+- The built-in gateway is clearly labelled and only runs when Xendit is not configured.
+- Passwords are stored as salted scrypt hashes; there is no password reset flow.
+- The `payments/webhook` endpoint expects a public URL in production (use a tunnel
+  locally).
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
+| `EINVAL: readlink …\.next\…` — dev server or build crashes right after "Starting…" | OneDrive is syncing the project and turns `.next` into cloud placeholders. Set `NEXT_DIST_DIR` in `.env.local` to a folder outside OneDrive (this machine already points at `%LOCALAPPDATA%\Temp\kaintayo-next\dist`), or pause OneDrive sync while developing. Deleting `.next` is a one-off workaround; it comes back. |
+| `503` "This needs the Supabase server key" | Add `SUPABASE_SECRET_KEY` to `.env.local` and restart. |
+| `42P01` / "Could not find the table 'public.products'" | Run the SQL migration in the Supabase SQL Editor. |
+| `401` from Xendit | Wrong/missing `XENDIT_SECRET_KEY`, or a live key with `XENDIT_MODE` not `live`. |
 | Redirected to `/login` after signing in | Cookies are blocked. Use `localhost` (not `127.0.0.1` mismatch) and check `NEXT_PUBLIC_APP_URL`. |
-| “We couldn't reach the payment gateway” | Wrong/expired `PAYMONGO_SECRET_KEY`, or live key with `PAYMONGO_MODE` not `live`. Check the server console. |
-| Webhook returns `401` | `PAYMONGO_WEBHOOK_SECRET` missing/wrong, or you are replaying an edited body. |
-| Order stuck pending | Open the receipt page to force a server-side check, or confirm the webhook is subscribed and reachable. |
-| Menu is empty | This is the default on a fresh install. Add products at `/admin`, or import records through your database adapter. |
+| “We couldn't reach the payment gateway” | Xendit rejected the invoice — check the server console for the provider message (often a non-absolute return URL). |
+| Webhook returns `401` | `XENDIT_CALLBACK_TOKEN` missing/wrong, or you are replaying an edited body. |
+| Order stuck pending | Open the receipt page to force a server-side check, or confirm the callback URL is registered and reachable. |
+| Menu is empty | This is the default on a fresh database. Add products at `/admin`. |
+| `403` "Your account doesn't have access" | A customer/seller tried an admin-only or another owner's resource. |

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { CheckoutForm } from "@/components/checkout/checkout-form";
 import { getSession } from "@/server/auth";
-import { paymongoEnabled } from "@/server/paymongo";
+import { xenditEnabled } from "@/server/xendit";
 
 export const metadata: Metadata = { title: "Checkout" };
 
@@ -10,7 +10,7 @@ export default async function CheckoutPage() {
 
   return (
     <CheckoutForm
-      mode={paymongoEnabled() ? "paymongo" : "demo"}
+      mode={xenditEnabled() ? "xendit" : "demo"}
       defaultName={user?.name ?? ""}
       defaultEmail={user?.email ?? ""}
     />
