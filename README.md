@@ -82,7 +82,7 @@ signing in. The menu starts empty by design — add products at `/admin`.
    select table_name, row_security from information_schema.tables
     where table_schema = 'public' order by table_name;   -- row_security = YES for all
    select email, role from public.users order by role;   -- admin / seller / customer
-   select count(*) from pg_policies where schemaname = 'public';  -- 15
+   select count(*) from pg_policies where schemaname = 'public';  -- 9
    ```
 
 ### Tables created
@@ -113,20 +113,28 @@ key never reaches Git. It is read only by `src/server/supabase.ts`, which import
 `server-only` — importing it from a client component fails the build. Never add a
 `NEXT_PUBLIC_` prefix to it and never log it.
 
-### Row Level Security
+### Authentication and Row Level Security
+
+KainTayo does **not** use Supabase Auth. It signs its own session cookie (HMAC with
+`AUTH_SECRET`), `src/server/auth.ts` verifies it, `src/server/user-store.ts` maps it to a
+row in `public.users`, and each API route checks the customer/seller/admin role and record
+ownership before touching the database. `auth.uid()` is therefore always `NULL` here and
+no policy depends on it.
 
 RLS is **enabled on every table** and never disabled to make the app work:
 
-- `anon` (publishable key): `SELECT` on `products` and `categories` only.
-- `authenticated`: customers see their own rows, sellers their own products/orders,
-  admins everything — policies are written against `auth.uid()` and helper functions
-  `is_admin()`, `is_seller()`, `can_view_order()`.
-- No client `INSERT`/`UPDATE`/`DELETE` policies exist for orders, payments, or accounts.
+- `anon` / `authenticated` (publishable key): `SELECT` on `products` and `categories`
+  only — the public catalog. Every other table has **no** policy for these roles, which
+  means access is denied by default (password hashes, orders, payments, and the webhook
+  audit trail included).
+- No `INSERT`/`UPDATE`/`DELETE` policy exists for `anon` or `authenticated` on any table.
+- `service_role` (the server Secret Key) is the only write path. Supabase gives it
+  `BYPASSRLS`, and the migration also declares it explicitly so the trusted path is
+  visible in the schema.
 
-Server routes use the service-role key (which bypasses RLS by design) **and** still run
-their own checks first — session, role, and ownership. RLS is defence in depth, not a
-substitute for validating each API request, and privileged access is never used instead
-of an authorization check.
+Server routes use the service-role key **and** still run their own checks first — session,
+role, and ownership. RLS is defence in depth, not a substitute for validating each API
+request, and privileged access is never used instead of an authorization check.
 
 ### Migrating old JSON data (optional)
 

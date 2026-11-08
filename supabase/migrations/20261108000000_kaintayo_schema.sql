@@ -6,17 +6,34 @@
 --   2. Paste this whole file and press Run (Ctrl+Enter)
 --   3. Verify with the checklist at the bottom of this file
 --
--- The script is idempotent: every statement is guarded with IF NOT EXISTS /
--- CREATE OR REPLACE, so it is safe to re-run.
+-- The script is idempotent: tables, triggers, indexes, policies and grants are
+-- guarded with IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS, so it is
+-- safe to re-run — including on a database that already has rows.
 --
--- Design notes
---   * Every table has RLS ENABLED (never disabled to make the app work).
---   * `anon` (the publishable key) can only read the public catalog.
---   * `authenticated` is governed by customer / seller / admin policies that
---     are written against Supabase Auth identities (auth.uid()).
---   * Application server routes use the secret (service_role) key and MUST
---     still run their own authorization checks — RLS is defence in depth, not
---     a replacement for validating each API request.
+-- How KainTayo authenticates (and why this file contains no auth.uid())
+--   * KainTayo issues its own signed session cookie (HMAC with AUTH_SECRET).
+--     src/server/auth.ts verifies the cookie, src/server/user-store.ts resolves
+--     it to a row in public.users, and every API route checks the
+--     customer/seller/admin role and record ownership BEFORE it reads or writes
+--     anything (src/server/api.ts).
+--   * Supabase Auth is not used by this project, so `auth.uid()` is NULL for
+--     every request the application makes. No policy may depend on it: a policy
+--     written against auth.uid() would silently match nothing and read like
+--     protection while providing none. The previous version of this file had
+--     that flaw; the legacy helper functions and policies are dropped below.
+--   * The server connects with the Secret Key (role `service_role`) — the only
+--     write path. The publishable key (role `anon`) can read the public catalog
+--     and nothing else.
+--
+-- Security invariants kept by this file
+--   * RLS is ENABLED on all seven tables and is never disabled.
+--   * No INSERT / UPDATE / DELETE policy exists for anon or authenticated.
+--   * customer / seller / admin authorization lives in the server API routes,
+--     evaluated against the verified KainTayo session — never in SQL, and
+--     privileged access is never used instead of an authorization check.
+--   * The Secret Key stays in .env.local, read only by src/server/supabase.ts
+--     (a `server-only` module). It is never sent to the browser and never
+--     logged.
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -54,7 +71,8 @@ create table if not exists public.products (
   available    boolean      not null default true,
   tag          text,
   prep_minutes integer      not null default 15 check (prep_minutes between 1 and 240),
-  -- the seller/admin that owns the dish (used by seller authorization)
+  -- the seller/admin that owns the dish (used by seller authorization in the
+  -- API routes: src/app/api/products/[id]/route.ts)
   seller_id    uuid         references public.users (id) on delete set null,
   created_at   timestamptz  not null default now(),
   updated_at   timestamptz  not null default now()
@@ -64,6 +82,7 @@ create table if not exists public.orders (
   id                 uuid primary key default gen_random_uuid(),
   -- human readable receipt id, e.g. KT-261108-4A2F
   reference          text        not null unique,
+  -- nullable: a signed-in customer owns the row, a guest checkout does not
   user_id            uuid        references public.users (id) on delete set null,
   status             text        not null default 'pending'
                      check (status in ('pending', 'paid', 'failed', 'cancelled')),
@@ -190,62 +209,42 @@ create unique index if not exists payments_provider_reference_key
 create index if not exists payment_events_order_id_idx on public.payment_events (order_id, created_at);
 
 create index if not exists users_role_idx on public.users (role);
+create index if not exists users_email_idx on public.users (email);
 
 -- ---------------------------------------------------------------------------
--- 4. Helper functions used by the RLS policies
---    SECURITY DEFINER so policies never recurse into the row they guard.
+-- 4. Remove the auth.uid()-based security layer (upgrade path)
+--
+--    These helpers/policies assumed Supabase Auth. KainTayo uses its own
+--    session cookie, so auth.uid() was NULL for every request and the checks
+--    could never grant anything. Dropping them removes dead code that read
+--    like real protection; authorization now lives only in the API routes.
 -- ---------------------------------------------------------------------------
-create or replace function public.is_admin()
-returns boolean
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select exists (
-    select 1 from public.users u
-    where u.id = auth.uid() and u.role = 'admin'
-  );
-$$;
+drop function if exists public.is_admin();
+drop function if exists public.is_seller();
+drop function if exists public.can_view_order(uuid);
 
-create or replace function public.is_seller()
-returns boolean
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select exists (
-    select 1 from public.users u
-    where u.id = auth.uid() and u.role in ('seller', 'admin')
-  );
-$$;
+-- legacy policies (kept as DROP ... IF EXISTS so an already-migrated database
+-- is cleaned up by re-running this file)
+drop policy if exists "Users read their own profile" on public.users;
+drop policy if exists "Users update their own profile" on public.users;
 
--- Admins see everything, sellers see their own orders plus orders that contain
--- one of their dishes, customers see only their own orders.
-create or replace function public.can_view_order(p_order_id uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select
-    exists (
-      select 1 from public.users u
-      where u.id = auth.uid() and u.role = 'admin'
-    )
-    or exists (
-      select 1 from public.orders o
-      where o.id = p_order_id and o.user_id = auth.uid()
-    )
-    or exists (
-      select 1
-      from public.order_items oi
-      join public.products p on p.id = oi.product_id
-      where oi.order_id = p_order_id and p.seller_id = auth.uid()
-    );
-$$;
+drop policy if exists "Staff manage categories" on public.categories;
+
+drop policy if exists "Products are publicly readable" on public.products;
+drop policy if exists "Staff manage products" on public.products;
+
+drop policy if exists "Orders are visible to their owner and staff" on public.orders;
+drop policy if exists "Orders are created by their owner" on public.orders;
+drop policy if exists "Orders are updated by staff" on public.orders;
+
+drop policy if exists "Order items follow their order" on public.order_items;
+drop policy if exists "Order items are written with their order" on public.order_items;
+
+drop policy if exists "Payments are visible with their order" on public.payments;
+drop policy if exists "Payments are managed by admins" on public.payments;
+
+drop policy if exists "Payment events follow their order" on public.payment_events;
+drop policy if exists "Payment events are managed by admins" on public.payment_events;
 
 -- ---------------------------------------------------------------------------
 -- 5. Row Level Security — enabled on every table, never disabled
@@ -258,118 +257,98 @@ alter table public.order_items    enable row level security;
 alter table public.payments       enable row level security;
 alter table public.payment_events enable row level security;
 
--- users -------------------------------------------------------------------
-drop policy if exists "Users read their own profile" on public.users;
-create policy "Users read their own profile"
-  on public.users for select to authenticated
-  using (id = auth.uid() or public.is_admin());
+-- 5a. Public catalog: the ONLY access the publishable key (anon) gets, and it
+--     is read-only. The menu and the category list are public by design.
+drop policy if exists "Catalog is publicly readable" on public.products;
+create policy "Catalog is publicly readable"
+  on public.products for select
+  to anon, authenticated
+  using (true);
 
-drop policy if exists "Users update their own profile" on public.users;
-create policy "Users update their own profile"
-  on public.users for update to authenticated
-  using (id = auth.uid() or public.is_admin())
-  with check (id = auth.uid() or public.is_admin());
--- (no insert/delete policy for clients: accounts are created by the server)
-
--- categories --------------------------------------------------------------
 drop policy if exists "Categories are publicly readable" on public.categories;
 create policy "Categories are publicly readable"
-  on public.categories for select to anon, authenticated
+  on public.categories for select
+  to anon, authenticated
   using (true);
 
-drop policy if exists "Staff manage categories" on public.categories;
-create policy "Staff manage categories"
-  on public.categories for all to authenticated
-  using (public.is_seller())
-  with check (public.is_seller());
+-- 5b. users, orders, order_items, payments and payment_events get NO policy
+--     for anon/authenticated: with RLS enabled and no policy, access is denied
+--     by default. That is what keeps password hashes, orders, payment
+--     references and the webhook audit trail out of reach of the publishable
+--     key — no policy is required to deny, and none may be added that depends
+--     on auth.uid() (always NULL for this app).
+--
+--     customer / seller / admin authorization is enforced in the server API
+--     routes against the verified KainTayo session: role checks and product
+--     ownership in src/app/api/products/*, role-scoped order listing in
+--     src/server/order-store.ts, order ownership in src/app/api/payments/*.
 
--- products ----------------------------------------------------------------
-drop policy if exists "Products are publicly readable" on public.products;
-create policy "Products are publicly readable"
-  on public.products for select to anon, authenticated
-  using (true);
+-- 5c. The server's Secret Key maps to service_role — the only write path.
+--     Supabase grants service_role BYPASSRLS, so these policies are normally
+--     never evaluated; they are declared so the trusted path is explicit in
+--     the schema (and the app keeps working if that attribute were absent).
+--     They grant nothing to anon or authenticated.
+drop policy if exists "Server may do anything" on public.users;
+create policy "Server may do anything"
+  on public.users for all to service_role
+  using (true) with check (true);
 
--- sellers may only touch dishes they own; admins may touch any dish
-drop policy if exists "Staff manage products" on public.products;
-create policy "Staff manage products"
-  on public.products for all to authenticated
-  using (public.is_seller())
-  with check (public.is_seller() and (public.is_admin() or seller_id = auth.uid()));
+drop policy if exists "Server may do anything" on public.categories;
+create policy "Server may do anything"
+  on public.categories for all to service_role
+  using (true) with check (true);
 
--- orders ------------------------------------------------------------------
-drop policy if exists "Orders are visible to their owner and staff" on public.orders;
-create policy "Orders are visible to their owner and staff"
-  on public.orders for select to authenticated
-  using (public.can_view_order(id));
+drop policy if exists "Server may do anything" on public.products;
+create policy "Server may do anything"
+  on public.products for all to service_role
+  using (true) with check (true);
 
-drop policy if exists "Orders are created by their owner" on public.orders;
-create policy "Orders are created by their owner"
-  on public.orders for insert to authenticated
-  with check (user_id = auth.uid() or public.is_admin());
+drop policy if exists "Server may do anything" on public.orders;
+create policy "Server may do anything"
+  on public.orders for all to service_role
+  using (true) with check (true);
 
-drop policy if exists "Orders are updated by staff" on public.orders;
-create policy "Orders are updated by staff"
-  on public.orders for update to authenticated
-  using (public.can_view_order(id))
-  with check (public.can_view_order(id));
+drop policy if exists "Server may do anything" on public.order_items;
+create policy "Server may do anything"
+  on public.order_items for all to service_role
+  using (true) with check (true);
 
--- order items -------------------------------------------------------------
-drop policy if exists "Order items follow their order" on public.order_items;
-create policy "Order items follow their order"
-  on public.order_items for select to authenticated
-  using (public.can_view_order(order_id));
+drop policy if exists "Server may do anything" on public.payments;
+create policy "Server may do anything"
+  on public.payments for all to service_role
+  using (true) with check (true);
 
-drop policy if exists "Order items are written with their order" on public.order_items;
-create policy "Order items are written with their order"
-  on public.order_items for insert to authenticated
-  with check (public.can_view_order(order_id));
-
--- payments ----------------------------------------------------------------
-drop policy if exists "Payments are visible with their order" on public.payments;
-create policy "Payments are visible with their order"
-  on public.payments for select to authenticated
-  using (public.can_view_order(order_id));
-
-drop policy if exists "Payments are managed by admins" on public.payments;
-create policy "Payments are managed by admins"
-  on public.payments for all to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
-
--- payment events ----------------------------------------------------------
-drop policy if exists "Payment events follow their order" on public.payment_events;
-create policy "Payment events follow their order"
-  on public.payment_events for select to authenticated
-  using (public.can_view_order(order_id));
-
-drop policy if exists "Payment events are managed by admins" on public.payment_events;
-create policy "Payment events are managed by admins"
-  on public.payment_events for all to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
+drop policy if exists "Server may do anything" on public.payment_events;
+create policy "Server may do anything"
+  on public.payment_events for all to service_role
+  using (true) with check (true);
 
 -- ---------------------------------------------------------------------------
--- 6. Privileges (RLS only filters rows; these grant the right to try)
+-- 6. Privileges (RLS filters rows; these decide who may try at all)
+--
+--    Supabase gives new tables in `public` broad default privileges, so they
+--    are revoked explicitly here: the publishable key must not even hold
+--    INSERT/UPDATE/DELETE rights on accounts, orders or payments.
 -- ---------------------------------------------------------------------------
 grant usage on schema public to anon, authenticated, service_role;
 
-grant select on public.products, public.categories to anon, authenticated;
+revoke all
+  on public.users, public.categories, public.products, public.orders,
+     public.order_items, public.payments, public.payment_events
+  from anon, authenticated;
 
-grant select, insert, update, delete
-  on public.users, public.orders, public.order_items, public.payments, public.payment_events
-  to authenticated;
+grant select on public.products, public.categories to anon, authenticated;
 
 grant all on all tables in schema public to service_role;
 grant all on all sequences in schema public to service_role;
-
-grant execute on function public.is_admin() to anon, authenticated, service_role;
-grant execute on function public.is_seller() to anon, authenticated, service_role;
-grant execute on function public.can_view_order(uuid) to anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------------
 -- 7. Seed accounts (roles used by the authorization tests)
 --    All three share the demo password `kain123`.
 --    Re-hash a new password with:  node scripts/hash-password.mjs "new-password"
+--
+--    Runs as the SQL Editor role (table owner), so RLS does not block it, and
+--    `on conflict (email) do nothing` keeps re-runs harmless.
 -- ---------------------------------------------------------------------------
 insert into public.users (email, name, role, password_hash) values
   ('demo@kaintayo.ph',    'Aling Nena',      'admin',    'scrypt$16384$8$1$cX++birUPFh3TAaFE+rXcw==$cbdkfHGBqsRz3GNKS8L6XzttY4K/KHK1BOVQvibnlpu5HJGvGMyRUbLkc2c53V7PsVYFLhPhCEly2z7j3X6XuQ=='),
@@ -378,16 +357,32 @@ insert into public.users (email, name, role, password_hash) values
 on conflict (email) do nothing;
 
 -- ============================================================================
--- Verification checklist (run these after pressing Run):
+-- Verification checklist (run these after pressing Run)
 --
---   select table_name, row_security from information_schema.tables
---    where table_schema = 'public' order by table_name;
---     -- every row must say 'YES'
+--   1) RLS enabled on every table — all rows must say 'YES':
+--        select table_name, row_security from information_schema.tables
+--         where table_schema = 'public' order by table_name;
 --
---   select email, role from public.users order by role;
---     -- admin / seller / customer rows present
+--   2) Exactly 9 policies: 2 public catalog reads + 7 service_role policies:
+--        select tablename, policyname, roles, cmd from pg_policies
+--         where schemaname = 'public' order by tablename, policyname;
 --
---   select count(*) from pg_policies where schemaname = 'public';
---     -- 15 policies (users 2, categories 2, products 2, orders 3,
---     --              order_items 2, payments 2, payment_events 2)
+--   3) The Secret Key role bypasses RLS (expected: service_role = true):
+--        select rolname, rolbypassrls from pg_roles
+--         where rolname in ('anon', 'authenticated', 'service_role');
+--
+--   4) The three seeded accounts exist:
+--        select email, role from public.users order by role;
+--
+--   5) Publishable-key isolation — run these two lines one at a time:
+--        set role anon;
+--        select count(*) from public.products;   -- allowed, returns 0
+--        select count(*) from public.users;      -- ERROR 42501 permission
+--                                                -- denied for table users
+--        reset role;
+--      The error on the second query is the expected, desired result.
+--
+--   6) Nothing references Supabase Auth any more:
+--        select count(*) from pg_policies where definition like '%auth.uid()%';
+--        -- expect 0
 -- ============================================================================
