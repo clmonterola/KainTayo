@@ -62,7 +62,8 @@ export function OrdersView() {
           </p>
           <h1 className="mt-1.5 text-3xl text-ink sm:text-4xl">My orders</h1>
           <p className="mt-1.5 text-sm text-muted">
-            Every payment attempt, with the reference PayMongo can trace.
+            Every payment attempt, with the reference you can track from checkout
+            to delivery.
           </p>
         </div>
         <Link href="/order" className={buttonStyles("primary", "md")}>
@@ -167,9 +168,8 @@ export function OrdersView() {
       </div>
 
       <p className="mt-6 text-center text-[11px] leading-relaxed text-muted">
-        Orders and payment records are stored on the demo server in{" "}
-        <code className="font-mono">.data/orders.json</code>. Statuses update through
-        server-side verification and PayMongo webhooks.
+        Orders and payment records are stored securely and updated automatically
+        through server-side payment verification.
       </p>
     </div>
   );

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Order, OrderStatus } from "@/lib/types";
+import type { Order, OrderStatus, PaymentEvent } from "@/lib/types";
 import { PAYMENT_METHODS } from "@/lib/types";
 import { api, ApiClientError } from "@/lib/api-client";
 import { formatDateTime, formatPeso } from "@/lib/format";
@@ -17,6 +17,33 @@ type LoadState = "loading" | "ready" | "notfound" | "error";
 
 const MAX_POLLS = 5;
 
+/**
+ * The payment layer records gateway-specific event types. The receipt maps each
+ * one to a neutral label so the interface stays free of provider branding while
+ * the original event data remains untouched on the server.
+ */
+const eventLabels: Record<string, string> = {
+  "order.created": "Order created",
+  "demo.session_created": "Payment session opened",
+  "paymongo.session_created": "Payment session opened",
+  "paymongo.session_failed": "Payment session could not be created",
+  "paymongo.session_verified": "Payment confirmed by our processor",
+  "paymongo.session_expired": "Checkout session expired",
+  "paymongo.session_active": "Payment still processing",
+  "demo.payment_paid": "Payment authorised",
+  "demo.payment_failed": "Payment declined",
+  "demo.payment_cancelled": "Checkout cancelled",
+  "checkout.cancelled": "Checkout cancelled",
+  "webhook.checkout_session.payment.paid": "Payment confirmed",
+  "webhook.payment.paid": "Payment confirmed",
+  "webhook.payment.failed": "Payment declined",
+  "webhook.checkout_session.expired": "Checkout session expired",
+};
+
+function eventLabel(event: PaymentEvent): string {
+  return eventLabels[event.type] ?? "Payment update";
+}
+
 const statusCopy: Record<
   OrderStatus,
   { title: string; description: string; tone: "leaf" | "mango" | "red" | "neutral" }
@@ -29,7 +56,7 @@ const statusCopy: Record<
   pending: {
     title: "Confirming your payment",
     description:
-      "We're checking the payment with PayMongo. This usually takes a few seconds — no need to refresh.",
+      "We're confirming your payment with our processor. This usually takes a few seconds — no need to refresh.",
     tone: "mango",
   },
   failed: {
@@ -125,7 +152,7 @@ export function PaymentResult({ reference }: { reference: string }) {
     setChecking(false);
     if (result?.status === "pending") {
       push({
-        title: "Still waiting on PayMongo",
+        title: "Still confirming your payment",
         description: "Give it a few more seconds, then check again.",
         variant: "info",
       });
@@ -142,7 +169,7 @@ export function PaymentResult({ reference }: { reference: string }) {
         </div>
         <h1 className="mt-6 text-2xl text-ink">Confirming your payment…</h1>
         <p className="mt-2 max-w-sm text-sm text-muted">
-          We&apos;re asking PayMongo for the trusted server-side status of{" "}
+          We&apos;re checking the verified status of{" "}
           <span className="font-mono text-xs">{reference}</span>.
         </p>
       </div>
@@ -198,7 +225,17 @@ export function PaymentResult({ reference }: { reference: string }) {
     PAYMENT_METHODS.find((entry) => entry.id === order.payment.method)?.label ??
     order.payment.method;
   const providerLabel =
-    order.payment.provider === "paymongo" ? "PayMongo (test mode)" : "Built-in demo gateway";
+    order.payment.provider === "paymongo"
+      ? "Secure hosted checkout"
+      : "KainTayo checkout";
+
+  // Gateway diagnostics are written by the payment layer and can name a
+  // provider, so only customer-safe reasons are surfaced in the interface.
+  const failureReason =
+    order.payment.failureReason &&
+    !/(paymongo|demo|test)/i.test(order.payment.failureReason)
+      ? order.payment.failureReason
+      : "";
 
   function copyReference() {
     void navigator.clipboard
@@ -234,8 +271,8 @@ export function PaymentResult({ reference }: { reference: string }) {
               </div>
               <h1 className="mt-2 text-3xl text-ink sm:text-4xl">{copy.title}</h1>
               <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted">
-                {order.status === "failed" && order.payment.failureReason
-                  ? order.payment.failureReason
+                {order.status === "failed" && failureReason
+                  ? failureReason
                   : copy.description}
               </p>
             </div>
@@ -289,7 +326,8 @@ export function PaymentResult({ reference }: { reference: string }) {
 
         {warning ? (
           <p className="mt-4 rounded-2xl border border-mango/30 bg-mango/10 px-4 py-3 text-xs leading-relaxed text-[#7a5207]">
-            {warning} The status shown is what we have stored locally; webhooks will keep it
+            We couldn&apos;t confirm the payment status automatically. The status
+            shown is what we have stored locally; server-side checks will keep it
             in sync.
           </p>
         ) : null}
@@ -351,12 +389,6 @@ export function PaymentResult({ reference }: { reference: string }) {
                 <div className="flex justify-between gap-3">
                   <dt className="text-muted">Processed by</dt>
                   <dd className="font-semibold text-ink">{providerLabel}</dd>
-                </div>
-                <div className="flex justify-between gap-3">
-                  <dt className="text-muted">Provider state</dt>
-                  <dd className="font-semibold text-ink">
-                    {order.payment.providerStatus ?? "—"}
-                  </dd>
                 </div>
                 {order.payment.paidAt ? (
                   <div className="flex justify-between gap-3">
@@ -420,21 +452,14 @@ export function PaymentResult({ reference }: { reference: string }) {
                 </svg>
               </span>
             </summary>
-            <div className="mt-3 space-y-2 font-mono text-[11px] text-muted">
-              {order.payment.sessionId ? (
-                <p>session · {order.payment.sessionId}</p>
-              ) : null}
-              {order.payment.paymentIntentId ? (
-                <p>intent · {order.payment.paymentIntentId}</p>
-              ) : null}
-              {order.payment.paymentId ? <p>payment · {order.payment.paymentId}</p> : null}
-              <ul className="mt-3 space-y-1.5 border-t border-line pt-3 font-sans text-[11px]">
+            <div className="mt-3 space-y-2 text-[11px] text-muted">
+              <ul className="space-y-1.5">
                 {order.events.map((event, index) => (
                   <li key={`${event.at}-${index}`} className="flex flex-wrap gap-x-2">
-                    <span className="tabular-nums text-muted/70">
+                    <span className="font-mono tabular-nums text-muted/70">
                       {formatDateTime(event.at)}
                     </span>
-                    <span className="text-ink">{event.message}</span>
+                    <span className="text-ink">{eventLabel(event)}</span>
                   </li>
                 ))}
               </ul>
@@ -443,7 +468,7 @@ export function PaymentResult({ reference }: { reference: string }) {
         </section>
 
         <p className="mt-4 px-1 text-center text-[11px] leading-relaxed text-muted">
-          Payment status is verified on the server through PayMongo&apos;s API and webhooks.
+          Payment status is verified on our servers before an order is confirmed.
           A checkout redirect alone never marks an order as paid.
         </p>
       </div>

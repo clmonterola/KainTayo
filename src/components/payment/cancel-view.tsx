@@ -55,9 +55,9 @@ export function CancelView({ reference }: { reference?: string }) {
           </div>
 
           <div className="mt-8 rounded-2xl border border-dashed border-line bg-cream/60 px-4 py-3 text-left text-[11px] leading-relaxed text-muted">
-            <strong className="font-semibold text-ink">Already paid?</strong> PayMongo may
-            still be confirming the transaction. Open your order history — the status there
-            is driven by server-side verification and webhooks, not this page.
+            <strong className="font-semibold text-ink">Already paid?</strong> Your
+            payment may still be confirming. Open your order history — the status
+            there is driven by server-side verification, not this page.
           </div>
         </div>
       </div>

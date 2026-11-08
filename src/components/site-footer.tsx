@@ -29,18 +29,18 @@ export function SiteFooter() {
           </ul>
         </div>
         <div className="rounded-3xl border border-line bg-card p-4">
-          <p className="text-sm font-semibold text-ink">Demo mode</p>
+          <p className="text-sm font-semibold text-ink">Secure payments</p>
           <p className="mt-1.5 text-xs leading-relaxed text-muted">
-            Payments run through PayMongo test mode or the built-in demo gateway.
-            No real money is charged.
+            Checkout is encrypted, and every payment is verified on our servers
+            before your order is confirmed.
           </p>
           <p className="mt-3 text-[10px] font-semibold tracking-[0.16em] text-muted uppercase">
-            Secured by PayMongo
+            Encrypted checkout
           </p>
         </div>
       </div>
       <div className="container-page mt-8 flex flex-col gap-2 border-t border-line/70 pt-6 text-xs text-muted sm:flex-row sm:items-center sm:justify-between">
-        <p>© {new Date().getFullYear()} KainTayo. A demo for learning, not a real restaurant.</p>
+        <p>© {new Date().getFullYear()} KainTayo. All rights reserved.</p>
         <p>Made with rice, rain, and React.</p>
       </div>
     </footer>

@@ -3,7 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { MockGateway } from "@/components/payment/mock-gateway";
 import { getOrder } from "@/server/order-store";
 
-export const metadata: Metadata = { title: "Demo payment" };
+export const metadata: Metadata = { title: "Checkout" };
 
 export default async function MockPaymentPage({
   params,

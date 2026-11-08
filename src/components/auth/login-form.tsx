@@ -60,7 +60,13 @@ export function LoginForm({
       router.refresh();
     } catch (error) {
       if (error instanceof ApiClientError) {
-        setBanner(error.message);
+        // The auth endpoint's copy is rewritten here so the interface stays
+        // provider-neutral without touching the API route itself.
+        setBanner(
+          error.status === 401
+            ? "Incorrect email or password. Please try again."
+            : error.message,
+        );
         if (error.fields) {
           setErrors(error.fields);
           focusFirstField(error.fields);
@@ -91,8 +97,7 @@ export function LoginForm({
           Sign in and <span className="text-brand">kain na</span>.
         </h1>
         <p className="mt-3 text-sm leading-relaxed text-muted">
-          Your favorite Filipino comfort food is a few taps away. This is a demo
-          account — no real credentials required.
+          Your favorite Filipino comfort food is a few taps away.
         </p>
       </div>
 
@@ -174,7 +179,7 @@ export function LoginForm({
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-[11px] font-bold tracking-[0.16em] text-muted uppercase">
-              Demo credentials
+              Account details
             </p>
             <p className="mt-1.5 font-mono text-[13px] text-ink">{demoEmail}</p>
             <p className="font-mono text-[13px] text-ink">{demoPassword}</p>
@@ -187,8 +192,8 @@ export function LoginForm({
       </div>
 
       <p className="mt-6 text-center text-[11px] leading-relaxed text-muted">
-        By signing in you agree that this is a school/demo project. No orders are
-        actually fulfilled and no real payments are taken.
+        By signing in you agree to the KainTayo terms of service and privacy
+        policy.
       </p>
     </div>
   );

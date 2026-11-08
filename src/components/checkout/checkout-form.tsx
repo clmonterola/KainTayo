@@ -121,8 +121,8 @@ export function CheckoutForm({
       push({
         title:
           result.mode === "paymongo"
-            ? "Redirecting to PayMongo"
-            : "Opening the demo gateway",
+            ? "Redirecting to secure checkout"
+            : "Opening secure checkout",
         description: `Order ${result.reference} · ${formatPeso(result.total)}`,
         variant: "info",
       });
@@ -172,7 +172,7 @@ export function CheckoutForm({
         <div className="mx-auto max-w-2xl">
           <EmptyState
             title="Nothing to check out yet"
-            description="Your bag is empty, so there's no payment to prepare. Pick a few dishes first — the adobo is a good place to start."
+            description="Your bag is empty, so there's no payment to prepare. Browse the menu and add a few dishes first."
             action={
               <Link href="/order" className={buttonStyles("primary", "md")}>
                 Browse the menu
@@ -265,7 +265,7 @@ export function CheckoutForm({
             </div>
           </Section>
 
-          <Section step="2" title="Delivery address" hint="Metro Manila only for this demo.">
+          <Section step="2" title="Delivery address" hint="Metro Manila only.">
             <div className="grid gap-4 sm:grid-cols-2">
               <Field
                 label="House number, street, landmark"
@@ -343,11 +343,7 @@ export function CheckoutForm({
           <Section
             step="3"
             title="Payment method"
-            hint={
-              mode === "paymongo"
-                ? "You'll be redirected to PayMongo's secure hosted checkout."
-                : "PayMongo keys are not configured, so the built-in demo gateway will open."
-            }
+            hint="You'll continue to a secure payment page to finish this order."
           >
             <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-3" role="radiogroup" aria-label="Payment method">
@@ -398,18 +394,16 @@ export function CheckoutForm({
                 </svg>
                 {mode === "paymongo" ? (
                   <span>
-                    <strong className="font-semibold">PayMongo test mode.</strong> Use the test
-                    cards or wallets in the PayMongo dashboard. Your secret key stays on the
-                    server and is never sent to this page.
+                    <strong className="font-semibold">Secure checkout.</strong> You&apos;ll
+                    be taken to an encrypted payment page hosted by our payment
+                    provider to authorise this order. Your card and wallet details
+                    are never stored on our servers.
                   </span>
                 ) : (
                   <span>
-                    <strong className="font-semibold">Demo gateway.</strong> Add{" "}
-                    <code className="rounded bg-white/70 px-1 py-0.5 font-mono text-[11px]">
-                      PAYMONGO_SECRET_KEY
-                    </code>{" "}
-                    to <code className="rounded bg-white/70 px-1 py-0.5 font-mono text-[11px]">.env.local</code>{" "}
-                    to try the real PayMongo hosted checkout.
+                    <strong className="font-semibold">Secure checkout.</strong> You&apos;ll
+                    confirm this payment on an encrypted page, and our servers
+                    verify it before your order is sent to the kitchen.
                   </span>
                 )}
               </div>
@@ -417,9 +411,9 @@ export function CheckoutForm({
           </Section>
 
           <p className="px-1 text-[11px] leading-relaxed text-muted">
-            By placing this order you agree to the demo&apos;s terms. This is not a real
-            restaurant and no food will be delivered. Payment records are stored locally
-            for demonstration.
+            By placing this order you confirm the delivery details above and agree
+            to the KainTayo terms of service. Payment is encrypted and verified on
+            our servers before your order is confirmed.
           </p>
         </div>
 
@@ -486,7 +480,7 @@ export function CheckoutForm({
                 <rect x="4.5" y="10" width="15" height="10" rx="2.5" />
                 <path d="M8 10V7.5a4 4 0 0 1 8 0V10" strokeLinecap="round" />
               </svg>
-              Encrypted · verified server-side · PayMongo
+              Encrypted · verified server-side
             </p>
           </div>
         </aside>

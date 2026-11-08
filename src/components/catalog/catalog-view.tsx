@@ -257,7 +257,7 @@ export function CatalogView() {
         {[
           { label: "35–50 min", sub: "Average delivery" },
           { label: "Free over ₱999", sub: "Else ₱59 delivery" },
-          { label: "GCash · Maya · Card", sub: "Secured by PayMongo" },
+          { label: "GCash · Maya · Card", sub: "Encrypted checkout" },
         ].map((item) => (
           <div
             key={item.label}

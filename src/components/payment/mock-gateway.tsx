@@ -73,9 +73,9 @@ export function MockGateway({
       const message =
         submitError instanceof ApiClientError
           ? submitError.message
-          : "The demo gateway could not process that. Please try again.";
+          : "The payment page could not process that. Please try again.";
       setError(message);
-      push({ title: "Demo payment issue", description: message, variant: "error" });
+      push({ title: "Payment issue", description: message, variant: "error" });
     }
   }
 
@@ -90,7 +90,7 @@ export function MockGateway({
             KainTayo checkout
           </div>
           <Badge tone="mango" className="bg-mango text-ink">
-            Demo gateway
+            Secure checkout
           </Badge>
         </div>
 
@@ -107,8 +107,8 @@ export function MockGateway({
               )}
             </span>
             <div className="text-white">
-              <p className="text-sm font-semibold">{methodMeta?.label} · Test wallet</p>
-              <p className="text-[11px] text-white/70">No real money will move</p>
+              <p className="text-sm font-semibold">{methodMeta?.label}</p>
+              <p className="text-[11px] text-white/70">Encrypted · verified on our servers</p>
             </div>
           </div>
 
@@ -167,7 +167,7 @@ export function MockGateway({
                 disabled={busy !== null}
                 onClick={() => void decide("failed")}
               >
-                Simulate a declined payment
+                Decline this payment
               </Button>
               <button
                 type="button"
@@ -180,15 +180,14 @@ export function MockGateway({
             </div>
 
             <p className="mt-5 text-center text-[11px] leading-relaxed text-muted">
-              This screen stands in for PayMongo&apos;s hosted checkout. Configure{" "}
-              <code className="font-mono">PAYMONGO_SECRET_KEY</code> to use the real
-              sandbox instead.
+              Payment details are encrypted, and this order is confirmed only after
+              the payment is verified on our servers.
             </p>
           </div>
         </div>
 
         <p className="mt-5 text-center text-[11px] text-white/70">
-          Demo mode · server-side payment verification still applies
+          Payment verified on our servers before your order is confirmed
         </p>
       </div>
     </div>

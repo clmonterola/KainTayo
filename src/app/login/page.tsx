@@ -74,7 +74,8 @@ export default async function LoginPage({
             </span>
             <p className="mt-4 text-sm font-semibold text-cream">Secure checkout</p>
             <p className="mt-1.5 text-xs leading-relaxed text-cream/60">
-              Pay with GCash, Maya, or card through PayMongo in test mode.
+              Pay with GCash, Maya, or card — encrypted and verified on our
+              servers.
             </p>
           </div>
         </div>
@@ -96,7 +97,7 @@ export default async function LoginPage({
         <div className="flex items-center justify-between border-b border-line/70 px-5 py-4 lg:hidden">
           <Logo />
           <span className="rounded-full border border-line bg-card px-3 py-1 text-[10px] font-bold tracking-[0.14em] text-muted uppercase">
-            Demo
+            Sign in
           </span>
         </div>
 
@@ -112,7 +113,7 @@ export default async function LoginPage({
         </div>
 
         <div className="border-t border-line/70 px-6 py-4 text-center text-[11px] text-muted">
-          KainTayo demo · PayMongo test mode · Built for demonstration
+          KainTayo · Filipino comfort food · Metro Manila delivery
         </div>
       </main>
     </div>

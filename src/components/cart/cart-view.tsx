@@ -40,7 +40,7 @@ export function CartView() {
               </svg>
             }
             title="Your bag is empty"
-            description="The adobo is calling. Browse the menu and add a few Filipino classics to get started."
+            description="Your bag is empty. Browse the menu and add a few dishes to get started."
             action={
               <Link href="/order" className={buttonStyles("primary", "md")}>
                 Browse the menu
@@ -195,7 +195,7 @@ export function CartView() {
                 <rect x="4.5" y="10" width="15" height="10" rx="2.5" />
                 <path d="M8 10V7.5a4 4 0 0 1 8 0V10" strokeLinecap="round" />
               </svg>
-              Secure checkout with PayMongo
+              Encrypted, server-verified checkout
             </p>
           </div>
         </aside>

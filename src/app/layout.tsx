@@ -21,13 +21,13 @@ export const metadata: Metadata = {
     template: "%s · KainTayo",
   },
   description:
-    "Order Filipino comfort food — adobo, sinigang, pancit, halo-halo — and pay securely with GCash, Maya, or card through PayMongo.",
+    "Order Filipino comfort food for delivery across Metro Manila — browse the live menu, check out in minutes, and pay securely with GCash, Maya, or card.",
   applicationName: "KainTayo",
-  authors: [{ name: "KainTayo demo" }],
+  authors: [{ name: "KainTayo" }],
   openGraph: {
     title: "KainTayo · Filipino comfort food, delivered",
     description:
-      "A full food-ordering demo with menu management, cart, checkout, and PayMongo test payments.",
+      "Fresh Filipino comfort food delivered to your door, with a fast cart, secure checkout, and flexible payment options.",
     type: "website",
   },
 };
